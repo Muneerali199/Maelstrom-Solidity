@@ -36,6 +36,7 @@ contract Maelstrom {
     event Deposit(address indexed token, address indexed user, uint256 amountEther, uint256 amountToken, uint256 lpTokensMinted);
     event Withdraw(address indexed token, address indexed user, uint256 amountEther, uint256 amountToken, uint256 lpTokensBurned);
     event FeeTransferFailed(address indexed treasury, uint256 amount);
+    event FeeTransferSucceeded(address indexed recipient, uint256 amount);
     event FeePending(address indexed treasury, uint256 amount);
     uint256 public auctionResetPercentage = 5;
     uint256 public totalFees = 0;
@@ -149,14 +150,15 @@ contract Maelstrom {
     }
 
     function withdrawPendingFees() external {
-        address feeRecipient = protocolParameters.treasury();
-        uint256 amount = pendingFees[feeRecipient];
+        uint256 amount = pendingFees[msg.sender];
         require(amount > 0, "No pending fees");
-        pendingFees[feeRecipient] = 0;
-        (bool success, ) = feeRecipient.call{ value: amount }("");
-        if (!success) {
-            pendingFees[feeRecipient] = amount;
-            emit FeeTransferFailed(feeRecipient, amount);
+        pendingFees[msg.sender] = 0;
+        (bool success, ) = msg.sender.call{ value: amount }("");
+        if (success) {
+            emit FeeTransferSucceeded(msg.sender, amount);
+        } else {
+            pendingFees[msg.sender] = amount;
+            emit FeeTransferFailed(msg.sender, amount);
         }
     }
 

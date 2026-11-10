@@ -2,12 +2,15 @@
 pragma solidity 0.8.20;
 
 import { Test, console } from "forge-std/Test.sol";
+import { StdStorage, stdStorage } from "forge-std/StdStorage.sol";
 import { Maelstrom } from "../src/Maelstrom.sol";
 import { LiquidityPoolToken } from "../src/LiquidityPoolToken.sol";
 import { ProtocolParameters } from "../src/ProtocolParameters.sol";
 import { MockERC20 } from "../src/MockERC20.sol";
 
 contract MaelstromTest is Test {
+    using stdStorage for StdStorage;
+
     Maelstrom public maelstrom;
     MockERC20 public tokenA;
     MockERC20 public tokenB;
@@ -27,6 +30,7 @@ contract MaelstromTest is Test {
     event SwapTrade(address indexed tokenSold, address indexed tokenBought, address indexed trader, uint256 amountTokenSold, uint256 amountTokenBought, uint256 tradeSellPrice, uint256 updatedSellPrice, uint256 tradeBuyPrice, uint256 updatedBuyPrice);
     event Deposit(address indexed token, address indexed user, uint256 ethAmount, uint256 tokenAmount, uint256 lpTokensMinted);
     event Withdraw(address indexed token, address indexed user, uint256 ethAmount, uint256 tokenAmount, uint256 lpTokensBurned);
+    event FeeTransferSucceeded(address indexed recipient, uint256 amount);
 
     function setUp() public {
         address treasury = makeAddr("treasury");
@@ -425,5 +429,46 @@ contract MaelstromTest is Test {
         uint256 bobTokensAfter = tokenA.balanceOf(bob);
         assertEq(bobTokensAfter - bobTokensBefore, expectedTokenAmount);
         vm.stopPrank();
+    }
+
+    function testWithdrawPendingFeesAfterTreasuryChange() public {
+        ToggleTreasury oldTreasury = new ToggleTreasury();
+        address manager = makeAddr("manager2");
+        ProtocolParameters protocol = new ProtocolParameters(address(oldTreasury), manager, 500);
+        Maelstrom localMaelstrom = new Maelstrom(address(protocol));
+
+        uint256 pending = 1 ether;
+        stdstore.target(address(localMaelstrom)).sig("pendingFees(address)").with_key(address(oldTreasury)).checked_write(pending);
+        vm.deal(address(localMaelstrom), pending);
+
+        vm.prank(manager);
+        protocol.updateTreasury(makeAddr("newTreasury"));
+
+        oldTreasury.withdraw(localMaelstrom);
+        assertEq(localMaelstrom.getPendingFees(address(oldTreasury)), pending);
+
+        oldTreasury.setReject(false);
+        uint256 balanceBefore = address(oldTreasury).balance;
+        vm.expectEmit(true, false, false, true, address(localMaelstrom));
+        emit FeeTransferSucceeded(address(oldTreasury), pending);
+        oldTreasury.withdraw(localMaelstrom);
+        assertEq(address(oldTreasury).balance, balanceBefore + pending);
+        assertEq(localMaelstrom.getPendingFees(address(oldTreasury)), 0);
+    }
+}
+
+contract ToggleTreasury {
+    bool public reject = true;
+
+    receive() external payable {
+        require(!reject, "Treasury rejects ETH");
+    }
+
+    function setReject(bool value) external {
+        reject = value;
+    }
+
+    function withdraw(Maelstrom maelstrom) external {
+        maelstrom.withdrawPendingFees();
     }
 }
